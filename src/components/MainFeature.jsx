@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
+import { useDispatch } from 'react-redux';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-toastify';
 import { format } from 'date-fns';
+import { fetchTasks } from '../services/taskService';
 import getIcon from '../utils/iconUtils';
 
 // Define icons
@@ -15,19 +17,24 @@ const EditIcon = getIcon('Edit');
 const CalendarIcon = getIcon('Calendar');
 const FlagIcon = getIcon('Flag');
 const PlusSquareIcon = getIcon('PlusSquare');
+const Loader = getIcon('Loader');
 
-function MainFeature({ onTasksChange }) {
-  const [tasks, setTasks] = useState(() => {
-    const savedTasks = localStorage.getItem('tasks');
-    return savedTasks ? JSON.parse(savedTasks) : [];
-  });
+function MainFeature({ tasks = [], loading = false }) {
+  const dispatch = useDispatch();
+  const [filteredTasks, setFilteredTasks] = useState([]);
+  const [filter, setFilter] = useState('all');
   
   const [newTask, setNewTask] = useState({
     title: '',
     description: '',
     dueDate: format(new Date(), 'yyyy-MM-dd'),
     priority: 'medium',
+    completed: false
   });
+  
+  // Temporary state for optimistic UI updates
+  const [localTasks, setLocalTasks] = useState([]);
+  const [localLoading, setLocalLoading] = useState(false);
   
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -35,33 +42,39 @@ function MainFeature({ onTasksChange }) {
   const [filter, setFilter] = useState('all');
   
   // Save tasks to localStorage whenever they change
+  // Apply filter to tasks when tasks or filter changes
   useEffect(() => {
-    localStorage.setItem('tasks', JSON.stringify(tasks));
-    if (onTasksChange) {
-      onTasksChange(tasks);
-    }
-  }, [tasks, onTasksChange]);
-  
-  const filteredTasks = tasks.filter(task => {
-    if (filter === 'all') return true;
-    if (filter === 'completed') return task.completed;
-    if (filter === 'active') return !task.completed;
-    if (filter === 'high') return task.priority === 'high';
-    if (filter === 'medium') return task.priority === 'medium';
-    if (filter === 'low') return task.priority === 'low';
-    return true;
-  });
+    setLocalTasks(tasks);
+    
+    // Apply filters
+    const filtered = tasks.filter(task => {
+      if (filter === 'all') return true;
+      if (filter === 'completed') return task.completed;
+      if (filter === 'active') return !task.completed;
+      if (filter === 'high') return task.priority === 'high';
+      if (filter === 'medium') return task.priority === 'medium';
+      if (filter === 'low') return task.priority === 'low';
+      return true;
+    });
+    
+    setFilteredTasks(filtered);
+  }, [tasks, filter]);
   
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setNewTask(prev => ({ ...prev, [name]: value }));
   };
   
-  const validateForm = () => {
+  const refreshTasks = () => {
+    dispatch(fetchTasks());
+  };
+  
+  const validateForm = async () => {
     if (!newTask.title.trim()) {
       toast.error("Task title cannot be empty");
       return false;
     }
+    return true;
     return true;
   };
   
@@ -83,56 +96,97 @@ function MainFeature({ onTasksChange }) {
     }
   };
   
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     
-    if (!validateForm()) return;
+    if (!(await validateForm())) return;
+    
+    setLocalLoading(true);
+    
+    // Importing the necessary services
+    const { createTask, updateTask } = await import('../services/taskService');
     
     if (isEditing) {
       // Update existing task
-      const updatedTasks = tasks.map(task => 
-        task.id === editingId 
-          ? { ...task, ...newTask, updatedAt: new Date() }
-          : task
-      );
-      setTasks(updatedTasks);
-      toast.success("Task updated successfully!");
+      const result = await updateTask(editingId, {
+        ...newTask,
+        completed: newTask.completed || false
+      });
+      
+      if (result.success) {
+        toast.success("Task updated successfully!");
+        refreshTasks();
+      } else {
+        toast.error(result.error || "Failed to update task");
+      }
     } else {
       // Add new task
-      const task = {
-        ...newTask,
-        id: Date.now().toString(),
-        completed: false,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      };
-      setTasks([...tasks, task]);
-      toast.success("Task added successfully!");
+      const result = await createTask(newTask);
+      
+      if (result.success) {
+        toast.success("Task added successfully!");
+        refreshTasks();
+      } else {
+        toast.error(result.error || "Failed to create task");
+      }
     }
     
+    setLocalLoading(false);
     resetForm();
     setIsFormVisible(false);
   };
   
-  const toggleTaskCompletion = (id) => {
-    const updatedTasks = tasks.map(task =>
-      task.id === id ? { ...task, completed: !task.completed } : task
-    );
-    setTasks(updatedTasks);
+  const toggleTaskCompletion = async (id) => {
+    setLocalLoading(true);
     
-    const completedTask = updatedTasks.find(task => task.id === id);
-    if (completedTask?.completed) {
-      toast.success("Task completed! 🎉");
+    // Find the task
+    const taskToUpdate = localTasks.find(task => task.id === id);
+    
+    if (!taskToUpdate) {
+      toast.error("Task not found");
+      return;
     }
+    
+    // Import the update function
+    const { updateTask } = await import('../services/taskService');
+    
+    // Toggle completion status
+    const result = await updateTask(id, {
+      ...taskToUpdate,
+      completed: !taskToUpdate.completed
+    });
+    
+    if (result.success) {
+      if (!taskToUpdate.completed) {
+        toast.success("Task completed! 🎉");
+      }
+      refreshTasks();
+    } else {
+      toast.error(result.error || "Failed to update task");
+    }
+    setLocalLoading(false);
   };
   
-  const deleteTask = (id) => {
-    setTasks(tasks.filter(task => task.id !== id));
-    toast.info("Task deleted");
+  const deleteTask = async (id) => {
+    setLocalLoading(true);
+    
+    // Import the delete function
+    const { deleteTask: deleteTaskService } = await import('../services/taskService');
+    
+    // Delete the task
+    const result = await deleteTaskService(id);
+    
+    if (result.success) {
+      toast.info("Task deleted");
+      refreshTasks();
+    } else {
+      toast.error(result.error || "Failed to delete task");
+    }
+    setLocalLoading(false);
   };
   
   const editTask = (id) => {
-    const taskToEdit = tasks.find(task => task.id === id);
+    const taskToEdit = localTasks.find(task => task.id === id);
     if (taskToEdit) {
       setNewTask({
         title: taskToEdit.title,
@@ -311,7 +365,16 @@ function MainFeature({ onTasksChange }) {
         )}
       </AnimatePresence>
       
-      <div className="space-y-2">
+      <div className="space-y-2 relative">
+        {(loading || localLoading) && (
+          <div className="absolute inset-0 bg-white/50 dark:bg-surface-800/50 z-10 flex items-center justify-center">
+            <div className="flex flex-col items-center">
+              <Loader className="w-10 h-10 text-primary animate-spin" />
+              <p className="mt-2 text-surface-600 dark:text-surface-400">Loading tasks...</p>
+            </div>
+          </div>
+        )}
+      
         {filteredTasks.length === 0 ? (
           <div className="text-center py-12">
             <AlertCircleIcon className="mx-auto h-12 w-12 text-surface-400 mb-4" />
