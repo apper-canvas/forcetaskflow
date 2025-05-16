@@ -39,7 +39,6 @@ function MainFeature({ tasks = [], loading = false }) {
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [filter, setFilter] = useState('all');
   
   // Save tasks to localStorage whenever they change
   // Apply filter to tasks when tasks or filter changes
